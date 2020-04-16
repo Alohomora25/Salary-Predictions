@@ -1,0 +1,765 @@
+---
+jupyter:
+  jupytext:
+    text_representation:
+      extension: .Rmd
+      format_name: rmarkdown
+      format_version: '1.2'
+      jupytext_version: 1.4.2
+  kernelspec:
+    display_name: Python 3
+    language: python
+    name: python3
+---
+
+```{python}
+#import required libraries
+import pandas as pd
+import sklearn as sk
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+# %matplotlib inline 
+import warnings
+warnings.filterwarnings('ignore')
+
+from scipy.stats import norm
+from sklearn.model_selection import train_test_split
+from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import cross_val_predict
+from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import mean_squared_error
+from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import Ridge
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.pipeline import Pipeline
+from sklearn.externals import joblib
+```
+
+```{python}
+#function to load the data into a Pandas Dataframe
+def load_f(file):
+    return pd.read_csv(file)
+
+#clean the data - remove duplicates and salaries that are $0
+def clean_d(original_df):
+    clean_d = original_df.drop_duplicates(subset='jobId')
+    clean_d = original_df[original_df.salary>0]
+    return clean_d
+    
+#scatter plots 
+def scatter_data(df, col):
+    plt.figure(figsize = (12,8))
+    plt.scatter(df[col], df['salary'] )
+    plt.ylabel('salary')
+    plt.xlabel(col)
+
+#regression plots
+def reg_data(df, col):
+    plt.figure(figsize=(12,8))
+    sns.regplot(x=df[col], y = df['salary'], data = df, line_kws = {'color' : 'red'})    
+    plt.ylim(0,)
+    
+#residual plots 
+def res_data(df,col):
+    plt.figure(figsize=(12,8))
+    sns.residplot(x=df[col], y = df['salary'], data = df)
+    plt.show()
+
+#distribution plots 
+def dis_data(Rfunction, Bfunction, Rname, Bname, title):
+    plt.figure(figsize=(10,6))
+    ax1 = sns.distplot(Rfunction, hist = False, color = 'r', label = Rname)
+    ax1 = sns.distplot(Bfunction, hist = False, color = 'b', label = Bname)
+    plt.title(title)
+    plt.show()
+    plt.close()
+```
+
+```{python}
+#load data
+print("Loading data..")
+train_feat_df = load_f('data/train_features.csv')
+train_target_df = load_f('data/train_salaries.csv')
+test_feat_df = load_f('data/test_features.csv')
+
+#define the variables
+cat_vars = ['companyId', 'jobType', 'degree', 'major', 'industry']
+num_vars = ['yearsExperience', 'milesFromMetropolis']
+tar = 'salary'
+
+#verify data is laoded 
+train_feat_df.head()
+```
+
+```{python}
+#verify data is loaded - 
+train_target_df.head()
+```
+
+```{python}
+train_feat_df.info()
+```
+
+```{python}
+test_feat_df.info()
+```
+
+```{python}
+#shape of the data
+print(train_feat_df.shape)
+print(train_target_df.shape)
+print(test_feat_df.shape)
+```
+
+```{python}
+#merge training data with features and training data with salary - store in train_df
+train_df = pd.merge(train_feat_df,train_target_df, on = 'jobId')
+```
+
+```{python}
+#verify features on merged data
+train_df.head()
+```
+
+```{python}
+#verify shape of the merged data-
+print(train_df.shape)
+```
+
+```{python}
+#store the sum of missing values in each column - 
+missing_val = train_df.isnull().sum()
+missing_val
+```
+
+```{python}
+#store the the salaries in the training data which are less than or equal to 0
+zero_sal = train_df['salary']<=0
+inval = train_df[zero_sal]
+inval
+```
+
+```{python}
+#clean the data i.e, remove duplicates and remove the salaries that are invalid or not useful for predictions like 
+#salary<=0
+clean_train_df = clean_d(train_df)
+```
+
+```{python}
+print(clean_train_df.shape)
+```
+
+```{python}
+#Reset the index values after dropping the invalid values 
+clean_train_df.reset_index(drop = True)
+clean_train_df.tail()
+```
+
+```{python}
+print(clean_train_df.dtypes)
+
+```
+
+## Exploratory Data Analysis
+Descriptive statistics of quantitative data
+
+```{python}
+clean_train_df.describe()
+```
+
+The minimum, maximum and the range of these numbers all seem appropriate for their corresponding columns. The mean and stand ard deviation of do not indicate anything wrong.
+
+```{python}
+#count of unique values in categorical data
+for cat in cat_vars:
+    if cat != 'jobId' and cat != 'companyId':
+       print(clean_train_df[cat].value_counts())
+```
+
+```{python}
+# unique values in clean_train_df data -
+clean_train_df.nunique()
+```
+
+There is a unique jobId for each row in the data and so it will be dropped to reduce the noise in the prediction.
+
+Are salaries normally distributed?
+
+```{python}
+#compute the kurtosis and skewness of salary
+print('Salary Skewness:', clean_train_df['salary'].skew())
+print('Salary Kurtosis:', clean_train_df['salary'].kurt())
+print('\n')
+if -0.5 <= clean_train_df['salary'].skew() <= 0.5:
+    print('Salary distribution is approximately symmetric')
+elif -0.5 >  clean_train_df['salary'] > 0.5:
+    print('Salary distribution is skewed')
+```
+
+###  Visualize target variable (Salary)
+
+```{python}
+#We use IQR to identify potential outliers 
+
+stats = clean_train_df['salary'].describe()
+IQR = stats['75%'] - stats['25%']
+upper_bound = stats['75%'] + 1.5 * IQR
+lower_bound = stats['25%'] - 1.5 * IQR
+print ('The upper and lower bounds of possible outliers are :' , (upper_bound ,lower_bound))
+```
+
+```{python}
+plt.figure(figsize=(14,6))
+plt.subplot(1,2,1)
+sns.boxplot(clean_train_df['salary'])
+plt.subplot(1,2,2)
+sns.distplot(clean_train_df['salary'], bins = 20)
+plt.show()
+```
+
+```{python}
+# Examine the outliers below the lower bound- 
+clean_train_df[clean_train_df['salary'] < 8.5]
+```
+
+```{python}
+#Examine potential outliers above the upper bound - 
+clean_train_df.loc[clean_train_df['salary'] > 220.5, 'jobType'].value_counts()
+```
+
+```{python}
+#Examine the outliers for a particular type(JUNIOR) of column, jobType - 
+clean_train_df[(clean_train_df['salary'] > 220.5) & (clean_train_df['jobType'] == 'JUNIOR')]
+```
+
+The high salary potential outliers seem to be either C-level executives or the Juniors are in industries such as Oil, Finance etc. who are known to have higher salaries. Hence, we do not drop them as they seem appropriate.
+
+
+### Visualize numerical data with salary
+
+
+```{python}
+scatter_data(clean_train_df, 'yearsExperience')
+
+```
+
+```{python}
+#Fit a regression line to years experience to visualize it as a predictor of salary - 
+reg_data(clean_train_df, 'yearsExperience')
+```
+
+```{python}
+#Variance of yearsExperience-
+res_data(clean_train_df, 'yearsExperience')
+```
+
+Variance in salary seems to slightly increase with increasing yearsExperience.
+
+Data seems to be spread away from the regression line. We can also see a weak positive relationship between yearsExperience and salary.
+
+```{python}
+scatter_data(clean_train_df, 'milesFromMetropolis')
+```
+
+```{python}
+reg_data(clean_train_df, 'milesFromMetropolis')
+```
+
+```{python}
+res_data(clean_train_df, 'milesFromMetropolis')
+```
+
+Variance in salary seems to slightly decrease with increasing milesFromMetropolis.
+
+Data is widely spread from the regression line and we can see a weak negative relationship between miles from metropolis and salary.
+
+
+### Relationships with categorical features-
+
+```{python}
+def rel_cat(df,col):
+    #Make subplots - left be the distribution of samples on the feature and right be the dependance of salary on the feature
+    plt.figure(figsize=(12,8))
+    plt.subplot(1,2,1)
+    if df[col].dtype == 'int64':
+        df[col].value_counts().sort_index().plot()
+    else:
+        #else change the categorical variable to category type and order their level by mean salary 
+        mean=df.groupby(col)['salary'].mean()
+        df[col]=df[col].astype('category').copy()
+        levels = mean.sort_values().index.to_list()
+        df[col].cat.reorder_categories(levels, inplace = True)
+        df[col].value_counts().plot()
+    plt.xticks(rotation = 40)
+    plt.xlabel(col)
+    plt.ylabel('Counts')
+    
+    plt.subplot(1,2,2)
+    if col == 'companyId': 
+        sns.boxplot(x=col, y = df['salary'], data = df)
+        plt.xticks(rotation = 90)
+    elif df[col].dtype == 'category':
+        sns.violinplot(x = col, y = df['salary'], data = df, scale = 'count', inner = 'quartile')
+        plt.xticks(rotation = 70)
+    plt.ylabel('Salaries')
+    plt.show()
+```
+
+```{python}
+rel_cat(clean_train_df, 'companyId')
+```
+
+By the right plot we can see that the salary is weakly associated with companies and the companyId shows salaries are evenly distributed across companies and hence, does not seem to be a good predictor of salary.
+
+jobId and companyId are irrelevant for prediction purposes, so they will be removed from the training data.
+
+```{python}
+# drop jobId and companyId 
+clean_train_df.drop(['jobId'], axis = 1, inplace = True)
+clean_train_df.drop(['companyId'], axis = 1, inplace = True)
+```
+
+```{python}
+clean_train_df.head()
+```
+
+Next we visualize each categorical feature to see which features could be good predictors of salary. We use the violin plot here to see the shape of the distribution curve along with mean and interquartile ranges.
+
+```{python}
+rel_cat(clean_train_df, 'jobType')
+```
+
+```{python}
+rel_cat(clean_train_df, 'degree')
+```
+
+```{python}
+rel_cat(clean_train_df, 'major')
+```
+
+```{python}
+rel_cat(clean_train_df, 'industry')
+```
+
+```{python}
+## One-hot encode categorical data in clean_train_df dataset
+clean_train_df = pd.get_dummies(clean_train_df)
+```
+
+```{python}
+clean_train_df.head()
+```
+
+### Correlation between all the features
+Now that numerical values are assigned to all features we can see the correlation between all of them.
+
+```{python}
+# Plot heatmap of all data with correlation coefficients visible
+clean_train_df_corr = clean_train_df.corr()
+plt.subplots(figsize=(40,30))
+sns.heatmap(clean_train_df_corr, cmap = 'BuGn', linewidth =.005, annot = True)
+```
+
+yearsExperience has the highest correlation with salary. jobType also seems to be correlated with salary.
+
+To create a basic training model, two variables will be assigned for the model to use. Twenty percent of the training data will be split into testing data that we can use to test the model with data for which the salaries are already known.
+
+```{python}
+#Split the data and assign 'salary' to 'sal_df' and the rest of the features to 'feat_df'. 
+feat_df = clean_train_df[clean_train_df.loc[ :, clean_train_df.columns != 'salary'].columns]
+sal_df = clean_train_df['salary']
+feat_train, feat_test, sal_train, sal_test = train_test_split(feat_df, sal_df, test_size = 0.2, random_state = 1)
+```
+
+```{python}
+#View inputs and outputs of training model
+print('Inputs- \n', feat_train.head())
+print('Outputs- \n', sal_train.head())
+```
+
+We will use linear regression here as salary is a continious variable. With all the data, we see that this is a case of Supervised Regression learning. We will establish the baseline model by appling Linear Regression to feat_train, sal_train.
+
+```{python}
+#Create Linear Regression Object and fit the model
+lm = LinearRegression()
+lm.fit(feat_train,sal_train)
+lm
+```
+
+```{python}
+#View coeff of Linear Regression object 
+print(lm.intercept_)
+print(lm.coef_)
+```
+
+Now that the baseline model is created, it can predict the salaries. The variable yhat is used to store the predictions using the training data.
+
+```{python}
+#predict salary using training data
+yhat = lm.predict(feat_train)
+
+#View first five predictions -
+print( 'First five predictions:' , yhat[0:5])
+```
+
+Mean squared error (MSE) will be evaluated now along with accuracy and r-squared to evaluate the baseline model's performance and to determine if the subsequent models improve over the established baseline model.
+
+```{python}
+#print MSE - 
+print( 'Mean Squared Error of our prediction model', mean_squared_error(sal_train, yhat))
+```
+
+```{python}
+# accuracy of the baseline model using 5-cross validation method -
+score = cross_val_score(lm, feat_train, sal_train, cv = 5)
+print( '5-Cross Validation accuracy', (np.mean(score)), (np.std(score)))
+```
+
+```{python}
+#distribution plot 
+Title = 'Distribution PLot of Actual Values vs Predicted Values'
+dis_data(sal_train, yhat, 'Actual Values(train data)', 'Predicted Values(train data)', Title)
+```
+
+We can see that the actual values and predicted values are not that different. The mean of the predicted values seems higher and the range seems lower.
+
+Next, we do the same for the 20% test data to see if the outcome is similar.
+
+```{python}
+#store test set predictions in yhat_test 
+yhat_test = lm.predict(feat_test)
+
+#view first five predictions - 
+print( 'First five predictions(test data)', yhat_test[0:5])
+```
+
+```{python}
+#MSE of test data - 
+print( 'Mean Squared Error of test data ', mean_squared_error(sal_test, yhat_test))
+```
+
+We can see that Mean squared error of the training data and test data is very similar.
+
+```{python}
+#accuracy of test data using 5-cross validation method - 
+score = cross_val_score(lm, feat_test, sal_test, cv = 5)
+print( '5-cross validation accuracy(test data)', (np.mean(score)), (np.std(score)))
+```
+
+```{python}
+#Distribution plot 
+Title = 'Distribution Plot of Predicted values of test data vs Actual values of test data'
+dis_data(sal_test, yhat_test, 'Actual Values(test)', 'Predicted Values(test)', title = Title)
+
+```
+
+Distribution, accuracy and MSE are not very different when comparing the training data and test data.
+
+We now try to see if we can reduce the MSE to less than 360.
+
+Three models that may improve results over the baseline model are -
+
+- Apply Polynomial Transformation
+- Use Ridge Regression
+- Use Random Forest
+
+The shape and features of the training data and testing data will be checked before applying models on them.
+
+```{python}
+#shape and features -
+
+print( 'Number of training samples-', feat_train.shape, '\n with the features-', feat_train.columns) 
+print( 'Number of testing samples-', feat_test.shape, '\n with the features-', feat_test.columns)
+print( 'Number of training salaries-', sal_train.shape)
+print( 'Number of testing salaries-', sal_test.shape)
+```
+
+We will first apply Polynomial Features to already built Linear regression model and see if MSE reduces.
+
+```{python}
+#Fit and transform the variables with 2nd order polynomial
+pr = PolynomialFeatures(2)
+feat_train_pr = pr.fit_transform(feat_train)
+feat_test_pr = pr.fit_transform(feat_test)
+pr
+```
+
+```{python}
+#Create a new model using Polynomial Transformation 
+poly = LinearRegression()
+poly.fit(feat_train_pr, sal_train)
+```
+
+```{python}
+#make predictions and view first five predictions on train data - 
+yhat_pr = poly.predict(feat_train_pr)
+print( 'First five predictions(train data)-', yhat_pr[0:5])
+```
+
+```{python}
+#Compare first five predicted values vs actual values - 
+print( 'Predicted Values(train)-', yhat_pr[0:5])
+print( 'Actual Values(train)-', sal_train[0:5].values)
+```
+
+```{python}
+#make predictions and view first five predictions on test data - 
+yhat_prtest = poly.predict(feat_test_pr)
+print( 'First five predictions(test data)-', yhat_prtest[0:5])
+```
+
+```{python}
+#Compare predicted values of test data and actual values of test data - 
+print( 'Predicted values(test)-', yhat_prtest[0:5])
+print( 'Actual values(test)-', sal_test[0:5].values)
+```
+
+```{python}
+#print R-squared values of training and testing data - 
+print( 'R-squared of training data-', poly.score(feat_train_pr, sal_train))
+print( 'R-squared of testing data-', poly.score(feat_test_pr, sal_test))
+```
+
+Minor improvement over base model (0.02)
+
+
+
+```{python}
+#MSE of training and testing data - 
+print( 'MSE of training data-', mean_squared_error(sal_train, yhat_pr))
+print( 'MSE of testing data-', mean_squared_error(sal_test, yhat_prtest))
+```
+
+```{python}
+#View distribution plot of actual vs fitted of training data - 
+dis_data(sal_test, yhat_pr, 'Actual Values(train)', 'Predicted Values(train)', title = 'Distribution PLot of actual values of training data vs predicted values of training data')
+```
+
+```{python}
+
+#view distribution plot of actual vs fitted of testing data - 
+dis_data(sal_test, yhat_prtest, 'Actual Values(test)', 'Predicted Values(test)', title = 'Distribution PLot of actual values of testing data vs predicted values of testing data')
+```
+
+Now we will check if applying Ridge regression reduces MSE
+
+
+
+```{python}
+#create a ridge regression object and fit it to training data 
+RidgeModel = Ridge(alpha = 1.0)
+RidgeModel.fit(feat_train_pr, sal_train)
+```
+
+```{python}
+#predict values of training data and testing data
+yhat_Ridge_train = RidgeModel.predict(feat_train_pr)
+yhat_Ridge_test = RidgeModel.predict(feat_test_pr)
+```
+
+```{python}
+#compare actual and predicted values of training data 
+print( 'Predicted Values(train)-', yhat_Ridge_train[0:5])
+print( 'Actual Values(train)-', sal_train[0:5].values)
+```
+
+```{python}
+#compare actual and predicted values of testing data 
+print( 'Predicted Values(test)-', yhat_Ridge_test[0:5])
+print( 'Actual Values(test)-', sal_test[0:5].values)
+```
+
+```{python}
+#R-squared of training and testing data - 
+print( 'R-squared values(train)-', RidgeModel.score(feat_train_pr, sal_train))
+print( 'R-squared values(test)-', RidgeModel.score(feat_test_pr, sal_test))
+```
+
+```{python}
+#MSE of training and testing data - 
+print( 'MSE of training data-', mean_squared_error(sal_train, yhat_Ridge_train))
+print( 'MSE of testing data-', mean_squared_error(sal_test, yhat_Ridge_test))
+```
+
+We see no improvement using alpha = 1.0
+
+Let us now use Grid Search to ensure right hyperparameters are used -
+
+```{python}
+#define the hyperparameter - 
+parameters1 = [{'alpha': [0.001,0.1,1, 10, 100, 1000, 10000, 100000, 100000]}]
+parameters1
+```
+
+```{python}
+#Create a new Ridge Regression object - 
+RM = Ridge()
+```
+
+```{python}
+#create a gridsearch object and pass RM, parameters1 to it. 
+Grid = GridSearchCV(RM, parameters1, cv = 5)
+```
+
+```{python}
+#fit the grid search model to the training data - 
+Grid.fit(feat_train, sal_train)
+```
+
+```{python}
+#assign best estimator - 
+bestRM = Grid.best_estimator_
+bestRM
+```
+
+```{python}
+#Test model using test data - 
+bestRM.score(feat_test, sal_test)
+```
+
+No improvement using alpha = 1
+
+Next let us try using Random Forest and Fit a Randorm Forest with random_state = 1 for consistency
+
+```{python}
+#create a random forest object - 
+RF = RandomForestRegressor(n_estimators = 150, n_jobs = 2, max_features = 30)
+RF
+```
+
+```{python}
+#fit a Random Forest model on training data - 
+RF.fit(feat_train, sal_train)
+```
+
+```{python}
+#make predictions on testing data and print the first five - 
+yhat_RF_test = RF.predict(feat_test)
+print( 'First five predictions-', yhat_RF_test[0:5])
+```
+
+```{python}
+#R-squared and MSE of test data - 
+print( 'R-squared of test data-', RF.score(feat_test, sal_test))
+print( 'MSE of test data-', mean_squared_error(sal_test, yhat_RF_test))
+```
+
+Linear regression with second order polynomial transformation gave best predictions with MSE of 354 and accuracy of 76%. This meets the goal of reducing MSE to below 360.
+
+Ridge Regression also led to similar results as the baseline model. Random Forest resulted in worse MSE of approximately 441 and the accuracy of 70%.
+
+### Automate and Deploy the model
+Automate pipeline
+To deploy the selected model, a data pipeline will be created to automate the needed transformations once data is given as an input to the model.
+
+```{python}
+
+#create pipeline for polynomial regression 
+input = [('scale', StandardScaler()), ('transformation', PolynomialFeatures(include_bias = False)), ('model', LinearRegression())]
+pipe = Pipeline(input)
+pipe
+```
+
+```{python}
+#fit the pipeline to the entire training data - 
+polyLRmodel = pipe.fit(feat_df, sal_df)
+```
+
+```{python}
+#make predictions on the test data and print first five - 
+ypipe = pipe.predict(feat_df)
+ypipe[0:5]
+```
+
+```{python}
+filename = 'Salary_prediction_model.csv'
+joblib.dump(polyLRmodel, filename)
+```
+
+```{python}
+#load model 
+loaded_m = joblib.load(filename)
+```
+
+```{python}
+#see results of test data with known salaries - 
+result = loaded_m.score(feat_test, sal_test)
+print(result)
+```
+
+Prepare test data with no known salaries 
+
+
+```{python}
+test_feat_df = pd.DataFrame(test_feat_df)
+
+```
+
+```{python}
+#convert data types of the categorical columns of the test data to 'category'- 
+test_feat_df[['jobId', 'companyId', 'jobType', 'degree', 'major', 'industry']] = test_feat_df[['jobId', 'companyId', 'jobType', 'degree', 'major', 'industry']].astype('category')
+print(test_feat_df.dtypes)
+```
+
+```{python}
+#drop features not relevant to salary prediction - 
+test_feat_df.drop('jobId', axis = 1, inplace = True)
+test_feat_df.drop('companyId', axis = 1, inplace = True)
+
+#one_hot_encode the ccategorical data - 
+test_feat_df = pd.get_dummies(test_feat_df)
+
+#view the top 5 rows of the final data - 
+test_feat_df.head()
+```
+
+```{python}
+#check if the data test_feat_df has any missing values - 
+test_feat_df.isnull().sum()
+```
+
+```{python}
+print( test_feat_df.shape)
+```
+
+```{python}
+#predict - 
+predictions = loaded_m.predict(test_feat_df)
+predictions[0:5]
+```
+
+This step is not completed since there are no outcomes for the test data.
+
+
+
+```{python}
+#check if the model has the attribute - feature importances - 
+if hasattr(loaded_m, 'feature_importances_'):
+    importances = loaded_m.feature_importances_
+else:
+    #linear models don't have feature importances
+    importances = [0]*len(feat_test.columns)
+    
+feature_importances = pd.DataFrame({'feature':feat_test.columns, 'importance':importances})
+feature_importances.sort_values(by = 'importance', ascending = False, inplace = True )
+
+#set index to feature - 
+feature_importances.set_index('feature', inplace = True, drop = True)
+```
+
+```{python}
+#plot the feature importances 
+feature_importances[0:5]
+```
+
+## Summary
+Applying second order polynomial transformation to the features gave the most accurate with the least error when using a Linear Regression Model. The result was a mean squared error of 354 with the accuracy of 76%.
+
+This model can be used as a guide when determining salaries since it results in resonable predictions when given information on years of experience, miles from Metropolis, job type, industry, college degree and major.
+
+## Measure efficacy
+We'll skip this step since we don't have the outcomes for the test data
